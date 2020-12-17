@@ -1,6 +1,7 @@
 const passport = require("koa-passport");
 const route = require("koa-route");
 const { Strategy: GitHubStrategy } = require("passport-github");
+const { Strategy: GitLabStrategy } = require("passport-gitlab2");
 
 /*
  * This file uses regular Passport.js authentication, both for
@@ -91,6 +92,64 @@ module.exports = function installPassport(app, { rootPgPool }) {
       "WARNING: you've not set up the GitHub application for login; see `.env` for details"
     );
   }
+
+  if (process.env.GITLAB_APP_ID && process.env.GITLAB_APP_SECRET) {
+    passport.use(
+      new GitLabStrategy(
+        {
+          clientID: process.env.GITLAB_APP_ID,
+          clientSecret: process.env.GITLAB_APP_SECRET,
+          callbackURL: `${process.env.ROOT_URL}/auth/gitlab/callback`,
+          passReqToCallback: true,
+        },
+        async function(req, accessToken, refreshToken, profile, done) {
+          let error;
+          let user;
+          try {
+            const { rows } = await rootPgPool.query(
+              `select * from app_private.link_or_register_user($1, $2, $3, $4, $5) users where not (users is null);`,
+              [
+                (req.user && req.user.id) || null,
+                "gitlab",
+                profile.id,
+                JSON.stringify({
+                  username: profile.username,
+                  avatar_url: profile._json.avatar_url,
+                  name: profile.displayName,
+                }),
+                JSON.stringify({
+                  accessToken,
+                  refreshToken,
+                }),
+              ]
+            );
+            user = rows[0] || false;
+          } catch (e) {
+            error = e;
+          } finally {
+            done(error, user);
+          }
+        }
+      )
+    );
+
+    app.use(route.get("/auth/gitlab", passport.authenticate("gitlab")));
+
+    app.use(
+      route.get(
+        "/auth/gitlab/callback",
+        passport.authenticate("gitlab", {
+          successRedirect: "/",
+          failureRedirect: "/login",
+        })
+      )
+    );
+  } else {
+    console.error(
+      "WARNING: you've not set up the GitHub application for login; see `.env` for details"
+    );
+  }
+  
   app.use(
     route.get("/logout", async ctx => {
       ctx.logout();
